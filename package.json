@@ -1,0 +1,35 @@
+{
+  "name": "x402-gateway",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types --strict-vars false",
+    "typecheck": "wrangler types --strict-vars false && tsc",
+    "test": "vitest run"
+  },
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.13.0",
+    "@coinbase/cdp-sdk": "^1.62.0",
+    "@x402/core": "^2.32.0",
+    "@x402/evm": "^2.32.0",
+    "@x402/extensions": "^2.32.0",
+    "@x402/hono": "^2.32.0",
+    "@x402/svm": "^2.32.0",
+    "hono": "^4.13.21",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.9.2",
+    "typescript": "^7.0.2",
+    "viem": "^2.58.6",
+    "vitest": "^5.1.2",
+    "wrangler": "^4.168.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "workerd@1.20261123.1": true
+  }
+}

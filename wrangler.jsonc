@@ -1,0 +1,46 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "multiagency-x402",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-23",
+  // global_fetch_strictly_public: the backends are Workers on this account, which a Worker can reach by URL only with it
+  // (otherwise Cloudflare answers error 1042).
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "vars": {
+    // Address that receives buyers' USDC: the Coinbase account's USDC deposit address on Base.
+    "PAY_TO": "0x404D263472E8798abcA7D2F51892f87FD498CFc5",
+    // "production" charges on Base mainnet; "development" uses Base Sepolia test funds.
+    "X402_ENVIRONMENT": "production",
+    "SNIPPET_REVIEW_PRICE": "$0.25",
+    // A Claude model on NEAR AI Cloud. The input and output caps in the service assume Opus 5.5 prices.
+    "SNIPPET_REVIEW_MODEL": "claude-opus-5-5",
+    // At most $1: x402 buyer clients refuse a single payment above that unless their owner raises the limit.
+    "MULTI_REVIEW_PRICE": "$1.00",
+    // Base URL of the Multi Review service. Empty leaves Multi Review unlisted and unserved.
+    "MULTI_REVIEW_URL": "",
+    "PRIVATE_INVESTIGATOR_PRICE": "$0.50",
+    // Base URL of Private Investigator's purchase service. Empty leaves it unlisted and unserved.
+    "PRIVATE_INVESTIGATOR_URL": "https://private-investigator-purchases.multidaomensional.workers.dev"
+  },
+  "secrets": {
+    // SALES_TOKEN: the bearer token that reads GET /sales.
+    "required": ["CDP_API_KEY_ID", "CDP_API_KEY_SECRET", "NEARAI_API_KEY", "MULTI_REVIEW_TOKEN", "PRIVATE_INVESTIGATOR_TOKEN", "SALES_TOKEN"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "JOBS", "class_name": "Job" },
+      { "name": "SALES", "class_name": "Sales" },
+      { "name": "CLAIMS", "class_name": "Claim" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Job"] },
+    { "tag": "v2", "new_sqlite_classes": ["Sales"] },
+    { "tag": "v3", "new_sqlite_classes": ["Claim"] }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  }
+}
