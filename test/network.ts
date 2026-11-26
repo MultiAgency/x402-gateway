@@ -13,7 +13,7 @@ export interface Network {
   /** Every settlement the facilitator was asked for, in order. */
   settled: unknown[];
   /** Every job a backend was handed, by backend host. */
-  jobs: { host: string; body: { id: string; input: unknown; callback: { url: string; token: string } } }[];
+  jobs: { host: string; body: { id: string; input: unknown; deadline: string; callback: { url: string; token: string } } }[];
   /** How the facilitator answers a settlement; succeeds by default. */
   settle: Settle;
   /** How a backend answers `POST /jobs`; queues by default. */

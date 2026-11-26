@@ -75,10 +75,12 @@ const jobStarted = {
 /** How long a backend has to answer its health check. */
 const HEALTH_TIMEOUT_MS = 5_000;
 /**
- * How long a backend has to take or refuse a job: inside the seconds a buyer's client waits. A job it takes after this
- * finds its record gone and is never charged; the buyer can send the same payment again.
+ * How long an awake backend has to take or refuse a job: inside the seconds a buyer's client waits. A job it takes
+ * after this finds its record gone and is never charged; the buyer can send the same payment again.
  */
 const START_TIMEOUT_MS = 8_000;
+/** How often a waking backend's health check is asked again. */
+const WAKE_POLL_MS = 250;
 
 /** Why a job the gateway runs itself failed, as its buyer should see it. Nothing is charged for it. */
 export class ServiceError extends Error {
@@ -204,8 +206,10 @@ async function alreadyBought(c: AppContext, id: string): Promise<Response> {
 /**
  * Hands a job to its backend: 202 once the backend queues it.
  *
- * The backend receives `{ id, input, callback: { url, token } }` with the service's bearer token,
- * and later POSTs an `Outcome` to `callback.url` with `callback.token` as its bearer token.
+ * The backend receives `{ id, input, deadline, callback: { url, token } }` with the service's bearer token, and later
+ * POSTs an `Outcome` to `callback.url` with `callback.token` as its bearer token. `deadline` (ISO 8601) is the last
+ * moment the payment can be collected: a result after it is not paid for, so the backend need not work past it.
+ * A backend that sleeps when idle is woken first, so the time to take the job is not spent starting it.
  * A backend that refuses the job answers 422 with `{ error, message }`, which reaches the buyer
  * unchanged and uncharged. Any other answer, or none in time, is the service being unavailable.
  */
@@ -216,11 +220,20 @@ async function handOff(
   const token = crypto.randomUUID();
   const record = c.env.JOBS.get(c.env.JOBS.idFromName(id));
 
-  await record.open({ id, service, token, payment });
+  const unavailable = async () => {
+    await record.refuse("service_unavailable");
+    return c.json({ error: "service_unavailable", message: "The service could not start this job. Retry shortly." }, 503);
+  };
+
+  const collectBy = await record.open({ id, service, token, payment });
+  if (!(await backendAwake(backend, Number(c.env.BACKEND_WAKE_SECONDS) * 1000))) {
+    console.error(JSON.stringify({ message: "backend did not wake", service, job: id }));
+    return unavailable();
+  }
   const accepted = await fetch(new URL("jobs", withTrailingSlash(backend.url)), {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${backend.token}` },
-    body: JSON.stringify({ id, input, callback: { url: `${statusUrl(c, id)}/outcome`, token } }),
+    body: JSON.stringify({ id, input, deadline: new Date(collectBy).toISOString(), callback: { url: `${statusUrl(c, id)}/outcome`, token } }),
     signal: AbortSignal.timeout(START_TIMEOUT_MS),
   }).catch((error: unknown) => {
     console.error(JSON.stringify({ message: "backend unreachable", service, job: id, error: String(error) }));
@@ -240,8 +253,7 @@ async function handOff(
     await accepted.body?.cancel();
     console.error(JSON.stringify({ message: "backend failed to start job", service, job: id, status: accepted.status }));
   }
-  await record.refuse("service_unavailable");
-  return c.json({ error: "service_unavailable", message: "The service could not start this job. Retry shortly." }, 503);
+  return unavailable();
 }
 
 /** The `error` code of a backend's refusal (`{ error, message }`), when it has one. */
@@ -262,6 +274,16 @@ async function backendHealthy(backend: Backend): Promise<boolean> {
   if (!answer?.ok) return false;
   const body = await answer.json<{ ok?: unknown }>().catch(() => undefined);
   return body?.ok === true;
+}
+
+/** Asks a backend's health check until it answers, for up to `waitMs`: one that sleeps when idle takes seconds to wake. */
+async function backendAwake(backend: Backend, waitMs: number): Promise<boolean> {
+  const until = Date.now() + waitMs;
+  for (;;) {
+    if (await backendHealthy(backend)) return true;
+    if (Date.now() + WAKE_POLL_MS >= until) return false;
+    await scheduler.wait(WAKE_POLL_MS);
+  }
 }
 
 function withTrailingSlash(url: string): string {

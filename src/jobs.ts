@@ -63,8 +63,11 @@ interface Stored {
  * ends, the end goes into the sales record once.
  */
 export class Job extends DurableObject<Env> {
-  /** Opens a backend's job (`token`, for its reports) or one the gateway runs itself (`input`, its order). */
-  async open(job: { id: string; service: string; payment: HeldPayment } & ({ token: string } | { input: unknown })): Promise<void> {
+  /**
+   * Opens a backend's job (`token`, for its reports) or one the gateway runs itself (`input`, its order), and returns
+   * the last moment its payment can be collected: a result after it is never paid for.
+   */
+  async open(job: { id: string; service: string; payment: HeldPayment } & ({ token: string } | { input: unknown })): Promise<number> {
     const created = Date.now();
     const window = created + job.payment.requirements.maxTimeoutSeconds * 1000;
     const collectBy = Math.min(window, job.payment.expires) - COLLECTION_MARGIN_MS;
@@ -81,6 +84,7 @@ export class Job extends DurableObject<Env> {
     // The gateway's own work starts at once. At `collectBy` a job that has not ended is lost, or its payment
     // uncollectable, and that end is recorded.
     await this.ctx.storage.setAlarm("input" in job ? created : collectBy);
+    return collectBy;
   }
 
   async view(): Promise<JobView | undefined> {

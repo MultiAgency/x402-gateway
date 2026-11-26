@@ -1,4 +1,4 @@
-import { runDurableObjectAlarm } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { pay } from "./buyer";
@@ -153,4 +153,27 @@ test("only the backend's token can report an outcome", async () => {
   const forged = await report({ callback: { url: job.callback.url, token: "guess" } }, { status: "done", result: REVIEW });
   expect(forged.status).toBe(401);
   expect(await view(job.id)).toMatchObject({ status: "running" });
+});
+
+test("a backend is handed the moment its job's payment stops being collectable", async () => {
+  const job = await paidOrder();
+  const collectBy = await runInDurableObject(job.stub, async (_, state) => (await state.storage.get<{ collectBy: number }>("job"))!.collectBy);
+  expect(job.deadline).toBe(new Date(collectBy).toISOString());
+});
+
+test("a backend that is still waking is waited for, then handed the job", async () => {
+  let checks = 0;
+  network.health = () => (++checks < 3 ? new Response("no container instance", { status: 503 }) : Response.json({ ok: true }));
+  const job = await paidOrder();
+  expect(checks).toBe(3);
+  expect(await view(job.id)).toMatchObject({ status: "running" });
+});
+
+test("a backend that doesn't wake in time is unavailable, is handed nothing, and collects nothing", async () => {
+  network.health = () => new Response("no container instance", { status: 503 });
+  const failed = await order("/private-investigator", await pay(await order("/private-investigator")));
+  expect(failed.status).toBe(503);
+  expect(await failed.json()).toMatchObject({ error: "service_unavailable" });
+  expect(network.jobs).toHaveLength(0);
+  expect(network.settled).toHaveLength(0);
 });
