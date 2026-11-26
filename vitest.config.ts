@@ -23,8 +23,7 @@ export default defineConfig({
           PRIVATE_INVESTIGATOR_URL: "https://private-investigator.test",
           PRIVATE_INVESTIGATOR_TOKEN: "private-investigator-token",
           SALES_TOKEN: "sales-token",
-          // Long enough for a backend that wakes after a few health checks; short enough that one that never does
-          // fails its test quickly.
+          // How long a job paid for while its backend was asleep waits for it; tests move the job's clock past it.
           BACKEND_WAKE_SECONDS: "1",
         },
       },

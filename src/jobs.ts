@@ -1,9 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import { z } from "zod";
 import { services } from "./catalog";
+import { claimOn } from "./claims";
 import { collect, type HeldPayment } from "./paywall";
 import { sales, type Channel, type Sale } from "./sales";
-import { ServiceError } from "./service";
+import { backendHealthy, refusalCode, sendJob, ServiceError } from "./service";
 
 /** How a job ended: reported by its backend, or by the job's record for work the gateway runs itself. */
 export const Outcome = z.discriminatedUnion("status", [
@@ -25,6 +26,9 @@ const RETENTION_MS = 7 * 24 * 60 * 60_000;
 const COLLECTION_MARGIN_MS = 60_000;
 /** Between attempts to collect a payment that was not settled. */
 const RETRY_MS = 30_000;
+/** Between health checks of a backend that is waking. */
+const WAKE_RETRY_MS = 2_000;
+const NOT_STARTED = "The service could not start this job. Nothing was charged; the same payment can be sent again.";
 const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const LATE: Failed = { status: "failed", reason: "timeout", message: "The service finished after the payment window closed. Nothing was charged." };
@@ -36,6 +40,12 @@ const UNPAID: Failed = {
 };
 const BROKE: Failed = { status: "failed", reason: "failed", message: "The service did not complete this job. Nothing was charged." };
 
+/** A job paid for while its backend was asleep: what it is handed once the backend wakes. */
+interface HandOff {
+  input: unknown;
+  callback: { url: string; token: string };
+}
+
 interface Stored {
   id: string;
   service: string;
@@ -45,6 +55,8 @@ interface Stored {
   tokenHash?: ArrayBuffer;
   /** The order of a job the gateway runs itself (`Service.work`), until it has run. */
   input?: unknown;
+  /** A backend's job not yet handed over, because the backend was asleep when it was paid for. */
+  handOff?: HandOff;
   payment: HeldPayment;
   /** The last moment the payment can be collected. */
   collectBy: number;
@@ -141,6 +153,45 @@ export class Job extends DurableObject<Env> {
     await this.conclude(ran, outcome);
   }
 
+  /** Keeps a backend's job to hand over once the backend wakes, which the alarm checks from now on. */
+  async handOverLater(handOff: HandOff): Promise<void> {
+    const stored = await this.ctx.storage.get<Stored>("job");
+    if (!stored) return;
+    await this.ctx.storage.put("job", { ...stored, handOff });
+    await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  /**
+   * Hands a waiting job to its backend once the backend answers its health check. A refusal ends the job; a backend
+   * that hasn't taken it within `BACKEND_WAKE_SECONDS` of the order is unavailable, and that ends it too.
+   */
+  private async handOver(stored: Stored & { handOff: HandOff }): Promise<void> {
+    const backend = services.find((service) => service.path === stored.service)?.backend?.(this.env);
+    if (backend && (await backendHealthy(backend))) {
+      const { input, callback } = stored.handOff;
+      const sent = await sendJob(backend, { id: stored.id, input, deadline: stored.collectBy, callback }, stored.service);
+      if (sent.taken) {
+        const { handOff: _handed, ...taken } = stored;
+        await this.ctx.storage.put("job", taken);
+        return this.ctx.storage.setAlarm(stored.collectBy);
+      }
+      if (sent.refusal !== undefined) return this.giveUp(stored, refusalCode(sent.refusal) ?? "refused", refusalMessage(sent.refusal));
+    }
+    const now = Date.now();
+    if (now >= stored.created + Number(this.env.BACKEND_WAKE_SECONDS) * 1000) return this.giveUp(stored, "service_unavailable", NOT_STARTED);
+    await this.ctx.storage.setAlarm(now + WAKE_RETRY_MS);
+  }
+
+  /**
+   * Ends a job its backend never started, as a refusal at once would: recorded as refused, nothing charged, and the
+   * payment released so the buyer can send it again. The buyer, who already has the job, sees it failed and why.
+   */
+  private async giveUp(stored: Stored, reason: string, message: string): Promise<void> {
+    await claimOn(this.env, stored.payment.id).release(stored.id);
+    const { handOff: _dropped, ...ended } = stored;
+    await this.end(ended, { outcome: "refused", reason }, { outcome: { status: "failed", reason, message } });
+  }
+
   /** Deletes a job its backend never started: it was refused, and that is recorded. */
   async refuse(reason: string): Promise<void> {
     const stored = await this.ctx.storage.get<Stored>("job");
@@ -153,6 +204,7 @@ export class Job extends DurableObject<Env> {
     const stored = await this.ctx.storage.get<Stored>("job");
     if (!stored) return;
     const now = Date.now();
+    if (stored.handOff && !stored.outcome) return this.handOver({ ...stored, handOff: stored.handOff });
     if (stored.input !== undefined && !stored.outcome && now < stored.collectBy) return this.perform(stored);
     if (stored.outcome?.status === "done" && !stored.transaction && now < stored.collectBy) {
       return this.collectPayment(stored);
@@ -189,6 +241,15 @@ export class Job extends DurableObject<Env> {
   private sale(stored: Stored, end: Ending): Sale {
     return { job: stored.id, service: stored.service, channel: stored.channel, network: stored.payment.requirements.network, ...end };
   }
+}
+
+/** The `message` of a backend's refusal (`{ error, message }`), or a general one. */
+function refusalMessage(body: string): string {
+  try {
+    const { message } = JSON.parse(body) as { message?: unknown };
+    if (typeof message === "string" && message) return message;
+  } catch {}
+  return "The service refused this job. Nothing was charged.";
 }
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;

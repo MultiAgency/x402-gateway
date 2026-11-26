@@ -1,8 +1,8 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { pay } from "./buyer";
-import { closeWindow, order, paidOrder as paidOrderOn, report, view } from "./gateway";
+import { closeWindow, order, paidOrder as paidOrderOn, recorded, report, view } from "./gateway";
 import { fakeNetwork, notSettled, settledOk, type Network } from "./network";
 
 let network: Network;
@@ -161,19 +161,60 @@ test("a backend is handed the moment its job's payment stops being collectable",
   expect(job.deadline).toBe(new Date(collectBy).toISOString());
 });
 
-test("a backend that is still waking is waited for, then handed the job", async () => {
-  let checks = 0;
-  network.health = () => (++checks < 3 ? new Response("no container instance", { status: 503 }) : Response.json({ ok: true }));
-  const job = await paidOrder();
-  expect(checks).toBe(3);
+/** Pays for a Private Investigator review while its backend is asleep, and returns the job that order started. */
+async function coldOrder() {
+  const payment = await pay(await order("/private-investigator"));
+  const started = await order("/private-investigator", payment);
+  expect(started.status).toBe(202);
+  const { id } = await started.json<{ id: string }>();
+  return { id, payment, stub: env.JOBS.get(env.JOBS.idFromName(id)) };
+}
+
+const asleep = () => new Response("no container instance", { status: 503 });
+
+test("an order to a backend that is asleep is answered at once, and the job is handed over once it wakes", async () => {
+  let awake = false;
+  network.health = () => (awake ? Response.json({ ok: true }) : asleep());
+  const job = await coldOrder();
+  expect(network.jobs).toHaveLength(0);
+  expect(await view(job.id)).toMatchObject({ status: "running" });
+
+  expect(await runDurableObjectAlarm(job.stub)).toBe(true);
+  expect(network.jobs).toHaveLength(0);
+
+  awake = true;
+  expect(await runDurableObjectAlarm(job.stub)).toBe(true);
+  expect(network.jobs.map((handed) => handed.body.id)).toEqual([job.id]);
   expect(await view(job.id)).toMatchObject({ status: "running" });
 });
 
-test("a backend that doesn't wake in time is unavailable, is handed nothing, and collects nothing", async () => {
-  network.health = () => new Response("no container instance", { status: 503 });
-  const failed = await order("/private-investigator", await pay(await order("/private-investigator")));
-  expect(failed.status).toBe(503);
-  expect(await failed.json()).toMatchObject({ error: "service_unavailable" });
+test("a job its backend refuses once awake ends failed with the backend's reason, uncharged, its payment free again", async () => {
+  let awake = false;
+  network.health = () => (awake ? Response.json({ ok: true }) : asleep());
+  const job = await coldOrder();
+  awake = true;
+  network.backend = () => Response.json({ error: "not_open", message: "The pull request is not open." }, { status: 422 });
+  await runDurableObjectAlarm(job.stub);
+  expect(await view(job.id)).toMatchObject({ status: "failed", reason: "not_open", message: "The pull request is not open." });
+  expect(network.settled).toHaveLength(0);
+  expect((await recorded("refused", "not_open")).jobs).toBeGreaterThan(0);
+  // As with a refusal at once: the same payment can buy a review again.
+  network.backend = () => new Response("queued", { status: 202 });
+  const again = await order("/private-investigator", job.payment);
+  expect(again.status).toBe(202);
+  expect((await again.json<{ id: string }>()).id).not.toBe(job.id);
+});
+
+test("a job whose backend doesn't wake in time ends failed as unavailable: handed nothing, charged nothing", async () => {
+  network.health = asleep;
+  const job = await coldOrder();
+  // Past the time a backend has to wake (BACKEND_WAKE_SECONDS, 1 s in tests).
+  await runInDurableObject(job.stub, async (_, state) => {
+    const stored = await state.storage.get<{ created: number }>("job");
+    await state.storage.put("job", { ...stored, created: stored!.created - 2_000 });
+  });
+  await runDurableObjectAlarm(job.stub);
+  expect(await view(job.id)).toMatchObject({ status: "failed", reason: "service_unavailable" });
   expect(network.jobs).toHaveLength(0);
   expect(network.settled).toHaveLength(0);
 });
