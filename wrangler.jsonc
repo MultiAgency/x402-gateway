@@ -21,7 +21,7 @@
     "PRIVATE_INVESTIGATOR_PRICE": "$0.50",
     // How long a job's backend may take to wake before the job is refused as unavailable. A Cloudflare Container
     // asleep after idling has taken over 20 seconds.
-    "BACKEND_WAKE_SECONDS": "30",
+    "BACKEND_WAKE_SECONDS": "2",
     // Base URL of Private Investigator's purchase service. Empty leaves it unlisted and unserved.
     "PRIVATE_INVESTIGATOR_URL": "https://private-investigator-purchases.multidaomensional.workers.dev"
   },
