@@ -104,6 +104,24 @@ export const snippetReview = task(
       `severity, location, explanation and a suggested fix. Accepts up to ${MAX_CODE_CHARS.toLocaleString("en-US")} ` +
       "characters. Charged only when the review is delivered.",
     price: (env) => env.SNIPPET_REVIEW_PRICE,
+    result: {
+      // The schema the model's answer is held to, so the description can't drift from what is delivered.
+      schema: z.toJSONSchema(Review, { target: "openapi-3.0" }) as Record<string, unknown>,
+      example: {
+        summary: "Sums item prices for a cart. The loop reads one item past the end, so it throws on every call.",
+        verdict: "request_changes",
+        findings: [
+          {
+            severity: "major",
+            category: "bug",
+            location: "line 3, `i <= items.length`",
+            title: "Loop reads past the end of items",
+            explanation: "`items[items.length]` is undefined, so `.price` throws a TypeError for any cart.",
+            suggestion: "for (let i = 0; i < items.length; i++) sum += items[i].price;",
+          },
+        ],
+      },
+    },
     example: {
       input: {
         code: "function total(items) {\n  let sum = 0;\n  for (let i = 0; i <= items.length; i++) sum += items[i].price;\n  return sum;\n}",

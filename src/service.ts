@@ -36,6 +36,8 @@ export interface Service {
   inputSchema: Record<string, unknown>;
   /** JSON Schema for the paid response, the shape of `example.output`, which directories rank listings on. */
   outputSchema: Record<string, unknown>;
+  /** What the job delivers once done (`GET /jobs/{id}`): an OpenAPI 3.0 object schema, and an example of it. */
+  result: { schema: Record<string, unknown>; example: unknown };
   /** How long a buyer's signed payment can be collected, from when they sign it. It bounds the job. */
   paymentWindowSeconds: number;
   /** Any response of 400 or above cancels the payment, so the buyer is not charged for it. */
