@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { services } from "./catalog";
 import { jobById, Outcome } from "./jobs";
+import { openApiDocument } from "./openapi";
 import type { Paywall } from "./paywall";
 import { sales } from "./sales";
 import type { Gateway } from "./service";
@@ -25,6 +26,11 @@ export function gateway(paywall: Paywall): Hono<Gateway> {
           price: `${service.price(c.env)} USDC`,
         })),
     }),
+  );
+
+  // The listed services as OpenAPI, for directories that read each route's inputs and outputs (Circle's).
+  app.get("/openapi.json", (c) =>
+    c.json(openApiDocument(services.filter((service) => service.available(c.env)), c.env, new URL(c.req.url).origin)),
   );
 
   // Whether every listed service can serve now: 503 when one can't, for uptime monitors. Says nothing more about a
